@@ -614,9 +614,9 @@ if strncmpi(vendor, 'SIEMENS', 7)
     '0029' '1010' 'OB' 'CSAImageHeaderInfo'
     '0029' '1018' 'CS' 'CSASeriesHeaderType'
     '0029' '1019' 'LO' 'CSASeriesHeaderVersion'
-    '0029' '1020' 'OB' 'CSASeriesHeaderInfo'
+    '0029' '1020' 'OB' 'CSASeriesHeaderInfoX' % Edmonton location
     '0029' '1110' 'OB' 'CSAImageHeaderInfo'
-    '0029' '1120' 'OB' 'CSASeriesHeaderInfo'
+    '0029' '1120' 'OB' 'CSASeriesHeaderInfo' % "Normal" location
     '0029' '1131' 'LO' 'PMTFInformation1'
     '0029' '1132' 'UL' 'PMTFInformation2'
     '0029' '1133' 'UL' 'PMTFInformation3'
