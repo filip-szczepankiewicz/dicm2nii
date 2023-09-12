@@ -1618,7 +1618,7 @@ end
 
 if isfield(s, 'btns')
     fid = fopen(strcat(fname, '.btns'), 'w');
-    fprintf(fid, '%6.0f %6.0f %6.0f %6.0f %6.0f %6.0f\n', s.btns); % one row
+    fprintf(fid, '%6.0f %6.0f %6.0f %6.0f %6.0f %6.0f\n', s.btns'); % one row
     fclose(fid);
 end
 
