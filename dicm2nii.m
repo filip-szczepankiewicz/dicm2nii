@@ -1452,6 +1452,7 @@ nDir = nii.hdr.dim(5);
 if nDir<2, return; end
 bval = nan(nDir, 1);
 bvec = nan(nDir, 3);
+btns = nan(nDir, 6);
 s = h{1};
 ref = 1; % not coded by Manufacturer, but by how we get bvec (since 190213).
 % With this method, the code will get correct ref if bvec ref scheme changes 
@@ -1497,6 +1498,7 @@ elseif isfield(s, 'PerFrameFunctionalGroupsSequence')
     elseif nDir == nFile % 1 vol per file, e.g. Siemens/UIH
         for i = 1:nDir
             bval(i) = MF_val('B_value', h{i}, 1);
+            [~, btns(i,:)] = getBtensorFromSiemensCSA(h{i}); % Filip added storage for B-tensors
             a = MF_val('DiffusionGradientDirection', h{i}, 1);
             if isempty(a)
                 a = MF_val('MRDiffusionGradOrientation', h{i}, 1);
@@ -1607,13 +1609,21 @@ end
 
 h{1}.bval = bval; % store all into header of 1st file
 h{1}.bvec = bvec; % computed bvec in image ref
+h{1}.btns = btns; % B-tensors
 
-%% subfunction: save bval & bvec files
+
+%% subfunction: save bval, bvec and btns files
 function save_dti_para(s, fname)
 if ~isfield(s, 'bvec') || all(s.bvec(:)==0), return; end
 if isfield(s, 'bval')
     fid = fopen(strcat(fname, '.bval'), 'w');
     fprintf(fid, '%.5g ', s.bval); % one row
+    fclose(fid);
+end
+
+if isfield(s, 'btns')
+    fid = fopen(strcat(fname, '.btns'), 'w');
+    fprintf(fid, '%6.0f %6.0f %6.0f %6.0f %6.0f %6.0f\n', s.btns); % one row
     fclose(fid);
 end
 
@@ -3087,4 +3097,34 @@ if exist('strings', 'builtin'), tf = isstring(A) && numel(A)==1; end
 function c = cross(a, b)
 c = a([2 3 1]).*b([3 1 2]) - a([3 1 2]).*b([2 3 1]);
 
-%%
+%% Extract the full b-tensor from siemens dicom/CSA header
+% By Filip Szczepankiewicz
+function [bt_3x3, bt_1x6] = getBtensorFromSiemensCSA(h)
+% function [bt_3x3, bt_1x6] = getBtensorFromSiemensCSA(h)
+
+if h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.B_value == 0
+    Bxx = 0;
+    Byy = 0;
+    Bzz = 0;
+    Bxy = 0;
+    Bxz = 0;
+    Byz = 0;
+else
+    Bxx = h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.DiffusionB_MatrixSequence.Item_1.DiffusionB_ValueXX;
+    Byy = h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.DiffusionB_MatrixSequence.Item_1.DiffusionB_ValueYY;
+    Bzz = h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.DiffusionB_MatrixSequence.Item_1.DiffusionB_ValueZZ;
+    Bxy = h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.DiffusionB_MatrixSequence.Item_1.DiffusionB_ValueXY;
+    Bxz = h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.DiffusionB_MatrixSequence.Item_1.DiffusionB_ValueXZ;
+    Byz = h.PerFrameFunctionalGroupsSequence.Item_1.MRDiffusionSequence.Item_1.DiffusionB_MatrixSequence.Item_1.DiffusionB_ValueYZ;
+end
+
+% B-tensor in scaled/"normal" SI units (s/mm^2)
+bt_3x3 = [
+    Bxx Bxy Bxz
+    Bxy Byy Byz
+    Bxz Byz Bzz
+    ];
+
+% We store the B-tensor in a single row using something similar to Voight
+% notation.
+bt_1x6 = bt_3x3([1 5 9 2 3 6]);
