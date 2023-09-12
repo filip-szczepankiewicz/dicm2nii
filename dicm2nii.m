@@ -272,6 +272,8 @@ pf.use_parfor       = getpref('dicm2nii_gui_para', 'use_parfor', true);
 pf.use_seriesUID    = getpref('dicm2nii_gui_para', 'use_seriesUID', true);
 pf.lefthand         = getpref('dicm2nii_gui_para', 'lefthand', true);
 pf.scale_16bit      = getpref('dicm2nii_gui_para', 'scale_16bit', false);
+pf.reorient         = getpref('dicm2nii_gui_para', 'reorient', true);
+pf.dicom_ext        = getpref('dicm2nii_gui_para', 'dicom_ext', false);
 
 %% Check each file, store partial header in cell array hh
 % first 2 fields are must. First 10 indexed in code
@@ -434,7 +436,7 @@ for i = 1:nRun
             end
         end
         if ~keep(i), break; end % skip silently
-        ind = sum(abs(bsxfun(@minus, val, val(:,2))), 1) / sum(abs(val(:,2))) > 0.01;
+        ind = sum(abs(val - val(:,2)), 1) / sum(abs(val(:,2))) > 0.01;
         if ~any(ind), continue; end % good
         if any(strcmp(fldsCk{k}, {'RescaleIntercept' 'RescaleSlope'}))
             h{i}{1}.ApplyRescale = true;
@@ -562,7 +564,7 @@ for i = 1:nRun
     end
 end
 if numel(unique(fnames)) < nRun % may happen to user-modified dicom/par
-    fnames = matlab.lang.makeUniqueStrings(fnames); % since R2014a
+    fnames = matlab.lang.makeUniqueStrings(fnames);
 end
 fmtStr = sprintf(' %%-%gs %%dx%%dx%%dx%%d\n', max(cellfun(@numel, fnames))+12);
 
@@ -605,12 +607,12 @@ if bids
     Subject = regexprep(subj, '[^0-9a-zA-Z]', '');
     Session                = {''};
     AcquisitionDate = {[acq{1}(1:4) '-' acq{1}(5:6) '-' acq{1}(7:8)]};
-    Comment                = {'N/A'};
+    Comment = {'N/A'};
     S = table(Subject,Session,AcquisitionDate,Comment);
 
     types = {'skip' 'anat' 'dwi' 'fmap' 'func' 'perf'};
     modalities = {'skip' 'FLAIR' 'FLASH' 'PD' 'PDmap' 'T1map' 'T1rho' 'T1w' 'T2map'  ...
-        'T2star''T2w' 'asl' 'dwi'  'fieldmap' 'm0scan' 'magnitude1' 'magnitude2' ...
+        'T2star' 'T2w' 'asl' 'dwi'  'fieldmap' 'm0scan' 'magnitude1' 'magnitude2' ...
         'phase1' 'phase2' 'phasediff' 'task-motor_bold' 'task-rest_bold'};
     Modality = categorical(repmat({'skip'}, [length(fnames) 1]), modalities);
     Type = categorical(repmat({'skip'},[length(fnames),1]), types);
@@ -892,7 +894,8 @@ for i = 1:nRun
         nam = fnames{i};
         if numel(nii)>1, nam = nii(j).hdr.file_name; end
         fprintf(fmtStr, nam, nii(j).hdr.dim(2:5));
-        nii(j).ext = set_nii_ext(nii(j).json); % NIfTI extension
+        if pf.dicom_ext; sDcm = s; else, sDcm = ''; end
+        nii(j).ext = set_nii_ext(nii(j).json, sDcm); % NIfTI extension
         if pf.save_json, save_json(nii(j).json, fname); end
         nii_tool('save', nii(j), fullfile(niiFolder, strcat(nam, ext)), rst3D);
     end
@@ -908,12 +911,8 @@ for i = 1:nRun
 end
 
 [~, fnames] = cellfun(@fileparts, fnames, 'UniformOutput', false);
-try % since 2014a 
-    fnames = matlab.lang.makeValidName(fnames);
-    fnames = matlab.lang.makeUniqueStrings(fnames, {}, namelengthmax);
-catch
-    fnames = genvarname(fnames);
-end
+fnames = matlab.lang.makeValidName(fnames);
+fnames = matlab.lang.makeUniqueStrings(fnames, {}, namelengthmax);
 h = cell2struct(h, fnames, 2); % convert into struct
 if bids, fname = fullfile(niiFolder, ['sub-' SubjectTable{1,1}], 'dcmHeaders.mat');
 else, fname = fullfile(niiFolder, 'dcmHeaders.mat');
@@ -1066,6 +1065,7 @@ if isfield(s, 'FrameReferenceTime') && nVol>1
 end
 
 % dim_info byte: freq_dim, phase_dim, slice_dim low to high, each 2 bits
+iSL = 3;
 [phPos, iPhase] = phaseDirection(s); % phPos relative to image in FSL feat!
 if     iPhase == 2, fps_bits = [1 4 16];
 elseif iPhase == 1, fps_bits = [4 1 16]; 
@@ -1074,48 +1074,48 @@ end
 
 % Reorient if MRAcquisitionType==3D && nSL>1
 % If FSL etc can read dim_info for STC, we can always reorient.
-[~, perm] = sort(ixyz); % may permute 3 dimensions in this order
-if strcmp(tryGetField(s, 'MRAcquisitionType', ''), '3D') && ...
-        dim(3)>1 && (~isequal(perm, 1:3)) % skip if already XYZ order
-    R(:, 1:3) = R(:, perm); % xform matrix after perm
-    fps_bits = fps_bits(perm);
-    ixyz = ixyz(perm); % 1:3 after perm
-    dim = dim(perm);
-    pixdim = pixdim(perm);
-    nii.hdr.dim(2:4) = dim;
-    nii.img = permute(nii.img, [perm 4:8]);
-    if isfield(s, 'bvec'), s.bvec = s.bvec(:, perm); end
+if pf.reorient
+    [~, perm] = sort(ixyz); % may permute 3 dimensions in this order
+    if strcmp(tryGetField(s, 'MRAcquisitionType', ''), '3D') && ...
+            dim(3)>1 && (~isequal(perm, 1:3)) % skip if already XYZ order
+        R(:, 1:3) = R(:, perm); % xform matrix after perm
+        fps_bits = fps_bits(perm);
+        ixyz = ixyz(perm); % 1:3 after perm
+        dim = dim(perm);
+        pixdim = pixdim(perm);
+        nii.hdr.dim(2:4) = dim;
+        nii.img = permute(nii.img, [perm 4:8]);
+        if isfield(s, 'bvec'), s.bvec = s.bvec(:, perm); end
+    end
+    iSL = find(fps_bits==16);
+    iPhase = find(fps_bits==4); % axis index for phase_dim in re-oriented img
+    
+    flp = R(ixyz+[0 3 6])<0; % flip an axis if true
+    d = det(R(:,1:3)) * prod(1-flp*2); % det after all 3 axis positive
+    if (d>0 && pf.lefthand) || (d<0 && ~pf.lefthand)
+        flp(1) = ~flp(1); % left or right storage
+    end
+    rotM = diag([1-flp*2 1]); % 1 or -1 on diagnal
+    rotM(1:3, 4) = (dim-1) .* flp; % 0 or dim-1
+    R = R / rotM; % xform matrix after flip
+    for k = 1:3, if flp(k), nii.img = flip(nii.img, k); end; end
+    if flp(iPhase), phPos = ~phPos; end
+    if isfield(s, 'bvec'), s.bvec(:, flp) = -s.bvec(:, flp); end
+    if flp(iSL) && isfield(s, 'SliceTiming') % slices flipped
+        s.SliceTiming = flip(s.SliceTiming);
+        sc = nii.hdr.slice_code;
+        if sc>0, nii.hdr.slice_code = sc+mod(sc,2)*2-1; end % 1<->2, 3<->4, 5<->6
+    end
 end
-iSL = find(fps_bits==16);
-iPhase = find(fps_bits==4); % axis index for phase_dim in re-oriented img
 
 nii.hdr.dim_info = (1:3) * fps_bits'; % useful for EPI only
 nii.hdr.pixdim(2:4) = pixdim; % voxel zize
-
-flp = R(ixyz+[0 3 6])<0; % flip an axis if true
-d = det(R(:,1:3)) * prod(1-flp*2); % det after all 3 axis positive
-if (d>0 && pf.lefthand) || (d<0 && ~pf.lefthand)
-    flp(1) = ~flp(1); % left or right storage
-end
-rotM = diag([1-flp*2 1]); % 1 or -1 on diagnal
-rotM(1:3, 4) = (dim-1) .* flp; % 0 or dim-1
-R = R / rotM; % xform matrix after flip
-for k = 1:3, if flp(k), nii.img = flip(nii.img, k); end; end
-if flp(iPhase), phPos = ~phPos; end
-if isfield(s, 'bvec'), s.bvec(:, flp) = -s.bvec(:, flp); end
-if flp(iSL) && isfield(s, 'SliceTiming') % slices flipped
-    s.SliceTiming = flip(s.SliceTiming);
-    sc = nii.hdr.slice_code;
-    if sc>0, nii.hdr.slice_code = sc+mod(sc,2)*2-1; end % 1<->2, 3<->4, 5<->6
-end
 
 % sform
 frmCode = all(isfield(s, {'ImageOrientationPatient' 'ImagePositionPatient'}));
 frmCode = tryGetField(s, 'TemplateSpace', frmCode);
 nii.hdr.sform_code = frmCode; % 1: SCANNER_ANAT
-nii.hdr.srow_x = R(1,:);
-nii.hdr.srow_y = R(2,:);
-nii.hdr.srow_z = R(3,:);
+nii.hdr.sform_mat = R;
 
 R0 = normc(R(:, 1:3));
 sNorm = null(R0(:, setdiff(1:3, iSL))');
@@ -1125,13 +1125,9 @@ R0(:,iSL) = sNorm;
 
 % qform
 nii.hdr.qform_code = frmCode;
-nii.hdr.qoffset_x = R(1,4);
-nii.hdr.qoffset_y = R(2,4);
-nii.hdr.qoffset_z = R(3,4);
+nii.hdr.qoffset_xyz = R(:,4);
 [q, nii.hdr.pixdim(1)] = dcm2quat(R0); % 3x3 dir cos matrix to quaternion
-nii.hdr.quatern_b = q(2);
-nii.hdr.quatern_c = q(3);
-nii.hdr.quatern_d = q(4);
+nii.hdr.quatern_bcd = q(2:4)';
 
 if shear
     nii.hdr.hdrTilt = nii.hdr; % copy all hdr for tilt version
@@ -1139,9 +1135,7 @@ if shear
     gantry = tryGetField(s, 'GantryDetectorTilt', 0);
     nii.hdr.hdrTilt.pixdim(iSL+1) = norm(R(1:3, iSL)) * cosd(gantry);
     R(1:3, iSL) = sNorm * nii.hdr.hdrTilt.pixdim(iSL+1);
-    nii.hdr.hdrTilt.srow_x = R(1,:);
-    nii.hdr.hdrTilt.srow_y = R(2,:);
-    nii.hdr.hdrTilt.srow_z = R(3,:);
+    nii.hdr.hdrTilt.sform_mat = R;
 end
 
 % store some possibly useful info in descrip and other text fields
@@ -1279,6 +1273,8 @@ flds = { % store for nii.ext and json
   'AcquisitionDateTime' 'TaskName' 'bval' 'bvec' 'VolumeTiming' ...
   'ReadoutSeconds' 'DelayTimeInTR' 'SliceTiming' 'RepetitionTime' ...
   'ParallelReductionFactorInPlane' 'ParallelAcquisitionTechnique' ...
+  'CompressedSensingParameters' 'ReconDLStrength' ...
+  'ImageTypeText' 'ImageHistory' ...
   'UnwarpDirection' 'EffectiveEPIEchoSpacing' 'EchoTime' 'deltaTE' 'EchoTimes' ...
   'SecondEchoTime' 'InversionTime' 'CardiacTriggerDelayTimes' ...
   'PatientName' 'PatientSex' 'PatientAge' 'PatientSize' 'PatientWeight' ...
@@ -1315,9 +1311,8 @@ if isempty(TR), TR = tryGetField(s, 'TemporalResolution'); end
 if isempty(TR), return; end
 hdr.pixdim(5) = TR / 1000;
 hdr.xyzt_units = 8; % seconds
-if hdr.dim(5)<3 || tryGetField(s, 'isDTI', 0) || ...
-        strncmp(tryGetField(s, 'MRAcquisitionType'), '3D', 2)
-    return; % skip 3D, DTI, fieldmap, short EPI etc
+if hdr.dim(5)<3 || strncmp(tryGetField(s, 'MRAcquisitionType'), '3D', 2)
+    return; % skip 3D, fieldmap, short EPI etc
 end
 
 nSL = hdr.dim(4);
@@ -1457,9 +1452,9 @@ s = h{1};
 ref = 1; % not coded by Manufacturer, but by how we get bvec (since 190213).
 % With this method, the code will get correct ref if bvec ref scheme changes 
 % some day, e.g. if GE saves (0018,9089) in the future.
-% ref = 0: IMG, UIH for now; PE='ROW" not tested 
+% ref = 0: IMG, UIH for now; PE='ROW' not tested 
 % ref = 1: PCS, Siemens/Philips/lateCanon or unknown vendor, this is default
-% ref = 2: FPS, Bruker for now (need to verify)
+% ref = 2: FPS, Bruker (need to verify)
 % ref = 3: FPS_GE, confusing signs
 % ref = 4: PFS, CANON (ImageComments) by ChrisR
 %  Since some dicom do not save bval or bvec for bval=0 case, it is better to
@@ -1485,13 +1480,13 @@ elseif isfield(s, 'PerFrameFunctionalGroupsSequence')
             if ~all(isnan(bvec(:))), ref = 0; end % UIH
         end
         if isfield(s, 'Private_0177_1100') && all(isnan(bvec(:))) % Bruker
-            str = char(s.Private_0177_1100');
-            expr = 'DwGradVec\s*=\s*\(\s*(\d+),\s*(\d+)\s*\)\s+'; % DwDir incomplete            
-            [C, ind] = regexp(str, expr, 'tokens', 'end', 'once');
-            if isequal(str2double(C), [nDir 3])
+            % Is DwGradVec in image ref? DwGradRead/Phase/Slice should be
+            expr = ['\s*=\s*\(\s*' num2str(nDir) '\s*\)\s+([\d\.-\s]*)'];
+            fn = @(k)regexp(char(s.Private_0177_1100'), [k expr], 'tokens', 'once');
+            C3 = [fn('DwGradRead') fn('DwGradPhase') fn('DwGradSlice')];
+            if ~any(cellfun(@(c)isempty(c), C3))
                 ref = 2;
-                bvec = sscanf(str(ind:end), '%f', nDir*3);
-                bvec = normc(reshape(bvec, 3, []))';
+                bvec = reshape(sscanf([C3{:}], '%f'), nDir, []);
                 [~, i] = sort(iDir); bvec(i,:) = bvec;
             end
         end
@@ -1604,7 +1599,7 @@ if any(nm>0.01 & abs(nm-1)>0.01) % this check may not be necessary
     h{1}.bval_original = bval; % before scaling
     bval = bval .* nm;
     nm(nm<1e-4) = 1; % remove zeros after correcting bval
-    bvec = bsxfun(@rdivide, bvec, sqrt(nm));
+    bvec = bvec ./ sqrt(nm);
 end
 
 h{1}.bval = bval; % store all into header of 1st file
@@ -1637,7 +1632,8 @@ function val = csa_header(s, key)
 fld = 'CSAImageHeaderInfo';
 if isfield(s, fld) && isfield(s.(fld), key), val = s.(fld).(key); return; end
 if isfield(s, key), val = s.(key); return; end % general tag: 2nd choice
-try val = s.PerFrameFunctionalGroupsSequence.Item_1.(fld).Item_1.(key); return; end
+try val = s.PerFrameFunctionalGroupsSequence.Item_1.(fld).Item_1.(key); return;
+catch, end
 fld = 'CSASeriesHeaderInfo';
 if isfield(s, fld) && isfield(s.(fld), key), val = s.(fld).(key); return; end
 val = [];
@@ -1976,20 +1972,20 @@ chkbox = @(parent,val,str,cbk,tip) uicontrol(parent, 'Style', 'checkbox', ...
     'Value', val, 'String', str, 'Callback', cbk, 'TooltipString', tip);
 
 set(fh, 'Toolbar', 'none', 'Menubar', 'none', 'Resize', 'off', 'Color', clr, ...
-    'Tag', 'dicm2nii_fig', 'Position', [200 scrSz(4)-600 420 300], 'Visible', 'off', ...
+    'Tag', 'dicm2nii_fig', 'Position', [200 scrSz(4)-600 420 324], 'Visible', 'off', ...
     'Name', 'dicm2nii - DICOM to NIfTI Converter', 'NumberTitle', 'off');
 
-uitxt('Move mouse onto button, text box or check box for help', [8 274 400 16]);
+uitxt('Move mouse onto button, text box or check box for help', [8 298 400 16]);
 str = sprintf(['Browse convertible files or folders (can have subfolders) ' ...
     'containing files.\nConvertible files can be dicom, Philips PAR,' ...
     ' AFNI HEAD, BrainVoyager files, or a zip file containing those files']);
-uicontrol('Style', 'Pushbutton', 'Position', [6 235 112 24], ...
+uicontrol('Style', 'Pushbutton', 'Position', [6 259 112 24], ...
     'FontSize', fSz, 'String', 'DICOM folder/files', 'Background', clrButton, ...
     'TooltipString', str, 'Callback', cb('srcDir'));
 
 jSrc = javaObjectEDT('javax.swing.JTextField');
 warning('off', 'MATLAB:ui:javacomponent:FunctionToBeRemoved');
-hs.src = javacomponent(jSrc, [118 234 294 24], fh); %#ok<*JAVCM>
+hs.src = javacomponent(jSrc, [118 258 294 24], fh); %#ok<*JAVCM>
 hs.src.FocusLostCallback = cb('set_src');
 hs.src.Text = getpf('src', pwd);
 % hs.src.ActionPerformedCallback = cb('set_src'); % fire when pressing ENTER
@@ -1998,11 +1994,11 @@ hs.src.ToolTipText = ['<html>This is the source folder or file(s). You can<br>' 
     'Click DICOM folder/files button to browse, or<br>' ...
     'Drag and drop a folder or file(s) into the box'];
 
-uicontrol('Style', 'Pushbutton', 'Position', [6 199 112 24], ...
+uicontrol('Style', 'Pushbutton', 'Position', [6 223 112 24], ...
     'FontSize', fSz, 'String', 'Result folder', 'Background', clrButton, ...
     'TooltipString', 'Browse result folder', 'Callback', cb('dstDialog'));
 jDst = javaObjectEDT('javax.swing.JTextField');
-hs.dst = javacomponent(jDst, [118 198 294 24], fh);
+hs.dst = javacomponent(jDst, [118 222 294 24], fh);
 hs.dst.FocusLostCallback = cb('set_dst');
 hs.dst.Text = getpf('dst', pwd);
 hs.dst.ToolTipText = ['<html>This is the result folder name. You can<br>' ...
@@ -2010,20 +2006,20 @@ hs.dst.ToolTipText = ['<html>This is the result folder name. You can<br>' ...
     'Click Result folder button to set the value, or<br>' ...
     'Drag and drop a folder into the box'];
 
-uitxt('Output format', [8 166 82 16]);
+uitxt('Output format', [8 190 82 16]);
 hs.rstFmt = uicontrol('Style', 'popup', 'Background', 'white', 'FontSize', fSz, ...
-    'Value', getpf('rstFmt',1), 'Position', [92 162 82 24], ...
+    'Value', getpf('rstFmt',1), 'Position', [92 186 82 24], ...
     'String', {' .nii' ' .hdr/.img' ' BIDS (http://bids.neuroimaging.io)'}, ...
     'TooltipString', 'Choose output file format');
 
 hs.gzip = chkbox(fh, getpf('gzip',true), 'Compress', '', 'Compress into .gz files');
-sz = get(hs.gzip, 'Extent'); set(hs.gzip, 'Position', [220 166 sz(3)+24 sz(4)]);
+sz = get(hs.gzip, 'Extent'); set(hs.gzip, 'Position', [220 190 sz(3)+24 sz(4)]);
 
 hs.rst3D = chkbox(fh, getpf('rst3D',false), 'SPM 3D', cb('SPMStyle'), ...
     'Save one file for each volume (SPM style)');
-sz = get(hs.rst3D, 'Extent'); set(hs.rst3D, 'Position', [330 166 sz(3)+24 sz(4)]);
+sz = get(hs.rst3D, 'Extent'); set(hs.rst3D, 'Position', [330 190 sz(3)+24 sz(4)]);
            
-hs.convert = uicontrol('Style', 'pushbutton', 'Position', [104 8 200 30], ...
+hs.convert = uicontrol('Style', 'Pushbutton', 'Position', [104 8 200 30], ...
     'FontSize', fSz, 'String', 'Start conversion', ...
     'Background', clrButton, 'Callback', cb('do_convert'), ...
     'TooltipString', 'Dicom source and Result folder needed before start');
@@ -2032,39 +2028,50 @@ hs.about = uicontrol('Style', 'popup',  'String', ...
     {'About' 'License' 'Help text' 'Check update' 'A paper about conversion'}, ...
     'Position', [326 12 88 20], 'Callback', cb('about'));
 
-ph = uipanel(fh, 'Units', 'Pixels', 'Position', [4 50 410 102], 'FontSize', fSz, ...
+ph = uipanel(fh, 'Units', 'Pixels', 'Position', [4 50 410 126], 'FontSize', fSz, ...
     'BackgroundColor', clr, 'Title', 'Preferences (also apply to command line and future sessions)');
 setpf = @(p)['setpref(''dicm2nii_gui_para'',''' p ''',get(gcbo,''Value''));'];
-
-p = 'lefthand';
-h = chkbox(ph, getpf(p,true), 'Left-hand storage', setpf(p), ...
-    'Left hand storage works well for FSL, and likely doesn''t matter for others');
-sz = get(h, 'Extent'); set(h, 'Position', [4 60 sz(3)+24 sz(4)]);
-
-p = 'save_patientName';
-h = chkbox(ph, getpf(p,true), 'Store PatientName', setpf(p), ...
-    'Store PatientName in NIfTI hdr, ext and json');
-sz = get(h, 'Extent'); set(h, 'Position', [180 60 sz(3)+24 sz(4)]);
 
 p = 'use_parfor';
 h = chkbox(ph, getpf(p,true), 'Use parfor if needed', setpf(p), ...
     'Converter will start parallel tool if necessary');
-sz = get(h, 'Extent'); set(h, 'Position', [4 36 sz(3)+24 sz(4)]);
+sz = get(h, 'Extent'); set(h, 'Position', [4 84 sz(3)+24 sz(4)]);
 
 p = 'use_seriesUID';
 h = chkbox(ph, getpf(p,true), 'Use SeriesInstanceUID if exists', setpf(p), ...
     'Only uncheck this if SeriesInstanceUID is messed up by some third party archive software');
-sz = get(h, 'Extent'); set(h, 'Position', [180 36 sz(3)+24 sz(4)]);
+sz = get(h, 'Extent'); set(h, 'Position', [4 60 sz(3)+24 sz(4)]);
 
 p = 'save_json';
 h = chkbox(ph, getpf(p,false), 'Save json file', setpf(p), ...
     'Save json file for BIDS (http://bids.neuroimaging.io/)');
+sz = get(h, 'Extent'); set(h, 'Position', [4 36 sz(3)+24 sz(4)]);
+
+p = 'save_patientName';
+h = chkbox(ph, getpf(p,true), 'Store PatientName', setpf(p), ...
+    'Store PatientName in NIfTI hdr, ext and json');
 sz = get(h, 'Extent'); set(h, 'Position', [4 12 sz(3)+24 sz(4)]);
+
+p = 'dicom_ext';
+h = chkbox(ph, getpf(p,false), 'Save dicom extension', setpf(p), ...
+    'Save header of the first DICOM file into NIfTI extension');
+sz = get(h, 'Extent'); set(h, 'Position', [240 84 sz(3)+24 sz(4)]);
 
 p = 'scale_16bit';
 h = chkbox(ph, getpf(p,false), 'Use 16-bit scaling', setpf(p), ...
     'Losslessly scale 16-bit integers to use dynamic range');
-sz = get(h, 'Extent'); set(h, 'Position', [180 12 sz(3)+24 sz(4)]);
+sz = get(h, 'Extent'); set(h, 'Position', [240 60 sz(3)+24 sz(4)]);
+
+p = 'lefthand';
+lh = chkbox(ph, getpf(p,true), 'Left-hand storage', setpf(p), ...
+    'Left hand storage works well for FSL, and likely doesn''t matter for others');
+sz = get(lh, 'Extent'); set(lh, 'Position', [240 12 sz(3)+24 sz(4)]);
+lh.Visible = getpf('reorient', true);
+
+p = 'reorient';
+h = chkbox(ph, getpf(p,true), 'Reorient NIfTI', {@setReorient lh}, ...
+    'Reorient the NIfTI image for better compatibility. If not sure, keep it checked');
+sz = get(h, 'Extent'); set(h, 'Position', [240 36 sz(3)+24 sz(4)]);
 
 hs.fig = fh;
 guidata(fh, hs); % store handles
@@ -2078,6 +2085,11 @@ catch me
 end
 
 gui_callback([], [], 'set_src', fh);
+
+%% turn lefthand on/off
+function setReorient(o, ~, lefthand)
+setpref('dicm2nii_gui_para', 'reorient', o.Value);
+if o.Value, lefthand.Visible = 'on'; else, lefthand.Visible = 'off'; end
 
 %% subfunction: return phase positive and phase axis (1/2) in image reference
 function [phPos, iPhase] = phaseDirection(s)
@@ -2194,6 +2206,7 @@ end
 flds = {'EchoTime' 'PixelSpacing' 'SpacingBetweenSlices' 'SliceThickness' ...
         'RepetitionTime' 'FlipAngle' 'RescaleIntercept' 'RescaleSlope' ...
         'ImageOrientationPatient' 'ImagePositionPatient' ...
+        'ImageTypeText' 'ImageHistory' ...
         'InPlanePhaseEncodingDirection' 'MRScaleSlope' 'CardiacTriggerDelayTime'};
 iF = 1; if isfield(s, 'SortFrames'), iF = s.SortFrames(1); end
 for i = 1:numel(flds)
@@ -2276,6 +2289,8 @@ switch fld
         catch, val = [0 0 0]';
         end
         if nargin>1, return; end
+    case {'ImageTypeText' 'ImageHistory'}
+        sq = 'CSAImageHeaderInfo';
     otherwise
         error('Sequence for %s not set.', fld);
 end
@@ -2452,24 +2467,6 @@ end
 function doParal = useParTool
 doParal = usejava('jvm');
 if ~doParal, return; end
-
-if isempty(which('parpool')) % for early matlab versions
-    try 
-        if matlabpool('size')<1 %#ok<*DPOOL>
-            try
-                matlabpool; 
-            catch me
-                fprintf(2, '%s\n', me.message);
-                doParal = false;
-            end
-        end
-    catch
-        doParal = false;
-    end
-    return;
-end
-
-% Following for later matlab with parpool
 try 
     if isempty(gcp('nocreate'))
         try
@@ -2493,12 +2490,12 @@ end
 % -0.25444411 0.52460458 -0.81243353 
 % ...
 % 0.9836791 0.17571079 0.038744]; % matrix rows separated by char(10) and/or ';'
-function ext = set_nii_ext(s)
-flds = fieldnames(s);
+function ext = set_nii_ext(json, s)
+flds = fieldnames(json);
 ext.ecode = 6; % text ext
 ext.edata = '';
 for i = 1:numel(flds)
-    try val = s.(flds{i}); catch, continue; end
+    try val = json.(flds{i}); catch, continue; end
     if ischar(val)
         str = sprintf('''%s''', val);
     elseif numel(val) == 1 % single numeric
@@ -2516,6 +2513,15 @@ for i = 1:numel(flds)
     ext.edata = [ext.edata flds{i} ' = ' str ';' char([0 10])];
 end
 
+% Dicom ext: ecode = 2
+if ~isempty(s) && isfield(s, 'SOPInstanceUID') % make sure it is dicom
+    if exist('ext', 'var'), n = numel(ext)+1; else, n = 1; end
+    ext(n).ecode = 2; % dicom
+    fid = fopen(s.Filename);
+    ext(n).edata = fread(fid, s.PixelData.Start, '*uint8');
+    fclose(fid);
+end
+
 % % Matlab ext: ecode = 40
 % fname = [tempname '.mat'];
 % save(fname, '-struct', 's', '-v7'); % field as variable
@@ -2529,15 +2535,6 @@ end
 % ext(n).edata = [typecast(int32(numel(b)), 'uint8')'; b];
 % ext(n).ecode = 40; % Matlab
  
-% % Dicom ext: ecode = 2
-% if isfield(s, 'SOPInstanceUID') % make sure it is dicom
-%     if exist('ext', 'var'), n = numel(ext)+1; else n = 1; end
-%     ext(n).ecode = 2; % dicom
-%     fid = fopen(s.Filename);
-%     ext(n).edata = fread(fid, s.PixelData.Start, '*uint8');
-%     fclose(fid);
-% end
-
 %% Fix some broken multiband sliceTiming. Hope this won't be needed in future.
 % Odd number of nShot is fine, but some even nShot may have problem.
 % This gives inconsistent result to the following example in PDF doc, but I
@@ -2551,6 +2548,7 @@ s2 = dicm_hdr(s.LastFile.Filename, dict);
 t = csa_header(s2, 'MosaicRefAcqTimes'); % try last volume first
 
 % No SL acc factor. Not even multiband flag. This is UGLY
+% sSliceAcceleration.lMultiBandFactor may be faked to 1 in VE11E
 nSL = double(s.LocationsInAcquisition);
 mb = ceil((max(t) - min(t)) ./ TA); % based on the wrong timing pattern
 if isempty(mb) || mb==1 || mod(nSL,mb)>0, return; end % not MB or wrong mb guess
@@ -2587,8 +2585,7 @@ elseif ucMode == 4 % interleaved
     ind = mod((0:nShot-1)*inc, nShot)'; % my guess based on chris data
     
     if nShot==6, ind = [0 2 4 1 5 3]'; end % special case
-    ind = bsxfun(@plus, ind*ones(1,mb), (0:mb-1)*nShot);
-    ind = ind + 1;
+    ind = ind*ones(1,mb) + (0:mb-1)*nShot + 1;
 
     t = zeros(nSL, 1);
     for i = 1:nShot
@@ -2638,6 +2635,14 @@ end
 %% Save JSON file, proposed by Chris G
 % matlab.internal.webservices.toJSON(s)
 function save_json(s, fname)
+% see https://github.com/bids-standard/bids-specification/issues/1407
+if ~isempty(regexp(tryGetField(s, 'ImageTypeText', ''), '\\DR\w\\', 'once')) || ...
+        isfield(s, 'ReconDLStrength')
+    flds = fieldnames(s); N = numel(flds);
+    [~, i] = ismember({'ImageTypeText' 'ReconDLStrength'}, flds); i = max(i);
+    s.DeepLearning = true;
+    s = orderfields(s, [1:i-1 N+1 i:N]);
+end
 flds = fieldnames(s);
 fid = fopen(strcat(fname, '.json'), 'w'); % overwrite silently if exist
 fprintf(fid, '{\n');
@@ -2681,6 +2686,11 @@ for i = 1:numel(flds)
         val = val / 1000; % secs 
     elseif strcmp(nam, 'ImageType')
         val = regexp(val, '\\', 'split');
+    elseif strcmp(nam, 'CompressedSensingParameters')
+        nam = 'CompressedSensingFactor';
+        val = str2double(strtok(val, '\\'));
+    elseif any(strcmp(nam, {'ReconDLStrength' 'ImageHistory'}))
+        nam = 'DeepLearningDetails';
     end
     
     fprintf(fid, '\t"%s": ', nam);
@@ -2901,7 +2911,7 @@ end
 function v = normc(M)
 vn = sqrt(sum(M .^ 2)); % vn = vecnorm(M);
 vn(vn==0) = 1;
-v = bsxfun(@rdivide, M, vn);
+v = M ./ vn;
 
 %%
 function BtnModalityTable(h,TT,TS)
@@ -3070,21 +3080,6 @@ else
         rst(i0(end):i(1)+2) = '';
     end
     if isempty(rst), rst = '/'; end
-end
-
-%% this can be removed for matlab 2013b+
-function y = flip(varargin)
-try
-    y = builtin('flip', varargin{:});
-catch
-    if nargin<2, varargin{2} = find(size(varargin{1})>1, 1); end
-    y = flipdim(varargin{:}); %#ok
-end
-
-%% this can be removed for matlab 2013b+
-function tf = isfolder(folderName)
-try tf = builtin('isfolder', folderName);
-catch, tf = isdir(folderName); %#ok
 end
 
 %% Return true if input is char or single string (R2016b+)

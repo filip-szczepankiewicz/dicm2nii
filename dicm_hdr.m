@@ -199,9 +199,9 @@ for nb = [0 2e6 fSize] % if not enough, read more till all read
         i = strfind(char(b8), tg); i = i(mod(i,2)==1);
     end
     for k = i(end:-1:1) % last is likely real PixelData
-        if p.expl, p.VR = char(b8(k+(4:5))); end
         p.iPixelData = k + p.expl*4 + 7; % s.PixelData.Start: 0-based
         if numel(b8)<p.iPixelData, b8 = [b8 fread(fid, 12, '*uint8')']; end %#ok
+        if p.expl, p.VR = char(b8(k+(4:5))); end
         p.bytes = ch2int32(b8(p.iPixelData+(-3:0)), p.be);
         if p.bytes==4294967295 && feof(fid), break; end % 2^32-1 compressed
         d = fSize - p.iPixelData - p.bytes; % d=0 most of time
@@ -398,14 +398,14 @@ if strcmp(vr, 'SQ')
 else
     [dat, info] = read_val(b8(i+(0:n-1)), vr, swap); i=i+n;
 end
-% if group==33
-%     fprintf('\t''%04X'' ''%04X'' ''%s'' ''%s'' ', group, elmnt, vr, name);
-%     if numel(dat)>99, fprintf('''%s ...''', dat(1:9));
-%     elseif ischar(dat), fprintf('''%s''', dat);
+% if group==0x21
+%     fprintf('\t''%04X'' ''%04X'' ''%s'' ''%s'' ''', group, elmnt, vr, name);
+%     if numel(dat)>99, fprintf('%s ...', dat(1:9));
+%     elseif ischar(dat), fprintf('%s', dat);
 %     elseif isnumeric(dat), fprintf('%g ', dat);
-%     else, fprintf('''SQ''');
+%     else, fprintf('SQ');
 %     end
-%     fprintf('\n');
+%     fprintf('''\n');
 % end
 end
 
@@ -1051,7 +1051,7 @@ R = reshape(R, [4 3])';
 s.ImagePositionPatient = R(:,4); % afni_key('ORIGIN') can be wrong
 s.LastFile.ImagePositionPatient = R * [0 0 dim(3)-1 1]'; % last slice
 R = R(1:3, 1:3);
-R = bsxfun(@rdivide, R, sqrt(sum(R.^2)));
+R = R ./ sqrt(sum(R.^2));
 s.ImageOrientationPatient = R(1:6)';
 foo = afni_key('DELTA');
 s.PixelSpacing = abs(foo([2 1]));
