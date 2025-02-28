@@ -258,7 +258,7 @@ end
 fh = figure(fn);
 if nargout, varargout{1} = fh; end
 hs.fig = handle(fh); % have to use numeric for uipanel for older matlab
-figNam = p.nii.hdr.file_name;
+figNam = char(p.nii.hdr.file_name);
 if numel(figNam)>40, figNam = [figNam(1:40) '...']; end
 figNam = ['nii_viewer - ' figNam ' (' formcode2str(hs.form_code(1)) ')'];
 set(fh, 'Toolbar', 'none', 'Menubar', 'none', ... % 'Renderer', 'opengl', ...
@@ -521,7 +521,9 @@ catch
     warning('off', 'MATLAB:HandleGraphics:ObsoletedProperty:JavaFrame');
     jFrame = fh.JavaFrame.getAxisComponent; %#ok<*JAVFM>
 end
-try java_dnd(jFrame, cb('drop')); catch me, disp(me.message); end
+if usejava('awt')
+    try java_dnd(jFrame, cb('drop')); catch me, disp(me.message); end
+end
 
 % iconPNG = fullfile(fileparts(mfilename('fullpath')), 'nii_viewer.png'); 
 % fh.JavaFrame.setFigureIcon(javax.swing.ImageIcon(iconPNG)); % windows only
@@ -1767,6 +1769,7 @@ rg = round(rg, 2, 'significant'); % since 2014b
 if rg(1)==rg(2), rg(1) = mi; end
 if abs(rg(1))>10, rg(1) = floor(rg(1)/2)*2; end % even number
 if abs(rg(2))>10, rg(2) = ceil(rg(2)/2)*2; end % even number
+if mi<0 && abs(mi)>ma/2, rg(1) = -rg(2); end % like phasediff
 
 %% Draw vector lines, called by set_cdata
 function vector_lines(hs, i, iaxis)
